@@ -13,7 +13,7 @@ app.use("/api", authRoutes);
 app.use("/api/secrets", secretRoutes);
 
 app.get("/", (req, res) => {
-  res.json({ message: "API O Cofre Digital rodando!" });
+  res.json({ message: "API O Cofre Digital rodando" });
 });
 
 module.exports = app;
