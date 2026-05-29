@@ -1,22 +1,27 @@
 const express = require("express");
 const db = require("../database/db");
 const auth = require("../middleware/auth");
+const { validateSecret } = require("../validators");
+const { encrypt, decrypt } = require("../services/cryptoService");
 
 const router = express.Router();
 
 router.post("/", auth, (req, res) => {
-  const { title, secret_content } = req.body;
+  const data = validateSecret(req.body);
 
-  if (!title || !secret_content) {
-    return res.status(400).json({ message: "Título e conteúdo secreto são obrigatórios." });
+  if (!data) {
+    return res.status(400).json({ message: "Dados inválidos." });
   }
+
+  const encryptedContent = encrypt(data.secret_content);
 
   db.run(
     "INSERT INTO secrets (title, secret_content, user_id) VALUES (?, ?, ?)",
-    [title, secret_content, req.user.id],
+    [data.title, encryptedContent, req.user.id],
     function (error) {
       if (error) {
-        return res.status(500).json({ message: "Erro ao criar anotação secreta." });
+        console.error("Erro ao criar segredo:", error.message);
+        return res.status(500).json({ message: "Erro interno do servidor." });
       }
 
       return res.status(201).json({
@@ -35,14 +40,21 @@ router.get("/:id", auth, (req, res) => {
     [id, req.user.id],
     (error, secret) => {
       if (error) {
-        return res.status(500).json({ message: "Erro ao buscar anotação secreta." });
+        console.error("Erro ao buscar segredo:", error.message);
+        return res.status(500).json({ message: "Erro interno do servidor." });
       }
 
       if (!secret) {
         return res.status(404).json({ message: "Anotação secreta não encontrada." });
       }
 
-      return res.json(secret);
+      try {
+        secret.secret_content = decrypt(secret.secret_content);
+        return res.json(secret);
+      } catch (decryptError) {
+        console.error("Erro ao descriptografar segredo:", decryptError.message);
+        return res.status(500).json({ message: "Erro interno do servidor." });
+      }
     }
   );
 });

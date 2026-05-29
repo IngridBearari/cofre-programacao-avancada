@@ -2,24 +2,52 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const db = require("../database/db");
+const { getJwtSecret } = require("../config/security");
+const { validateRegister, validateLogin } = require("../validators");
 
 const router = express.Router();
+const loginAttempts = new Map();
 
-router.post("/register", (req, res) => {
-  const { name, email, password } = req.body;
+function loginRateLimit(req, res, next) {
+  const email = typeof req.body?.email === "string" ? req.body.email.toLowerCase().trim() : "sem-email";
+  const key = `${req.ip}:${email}`;
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const maxAttempts = Number(process.env.LOGIN_RATE_LIMIT_MAX) || 5;
+  const attempt = loginAttempts.get(key) || { count: 0, firstTry: now };
 
-  if (!name || !email || !password) {
-    return res.status(400).json({ message: "Nome, email e senha são obrigatórios." });
+  if (now - attempt.firstTry > windowMs) {
+    attempt.count = 0;
+    attempt.firstTry = now;
   }
 
-  const hashedPassword = bcrypt.hashSync(password, 10);
+  attempt.count += 1;
+  loginAttempts.set(key, attempt);
+
+  if (attempt.count > maxAttempts) {
+    res.set("Retry-After", String(Math.ceil(windowMs / 1000)));
+    return res.status(429).json({ message: "Muitas tentativas. Tente novamente mais tarde." });
+  }
+
+  return next();
+}
+
+router.post("/register", (req, res) => {
+  const data = validateRegister(req.body);
+
+  if (!data) {
+    return res.status(400).json({ message: "Dados inválidos." });
+  }
+
+  const hashedPassword = bcrypt.hashSync(data.password, 10);
 
   db.run(
     "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
-    [name, email, hashedPassword],
+    [data.name, data.email, hashedPassword],
     function (error) {
       if (error) {
-        return res.status(400).json({ message: "Email já cadastrado." });
+        console.warn("Falha no cadastro:", error.message);
+        return res.status(400).json({ message: "Dados inválidos." });
       }
 
       return res.status(201).json({
@@ -30,23 +58,24 @@ router.post("/register", (req, res) => {
   );
 });
 
-router.post("/login", (req, res) => {
-  const { email, password } = req.body;
+router.post("/login", loginRateLimit, (req, res) => {
+  const data = validateLogin(req.body);
 
-  if (!email || !password) {
-    return res.status(400).json({ message: "Email e senha são obrigatórios." });
+  if (!data) {
+    return res.status(400).json({ message: "Credenciais inválidas." });
   }
 
-  db.get("SELECT * FROM users WHERE email = ?", [email], (error, user) => {
+  db.get("SELECT * FROM users WHERE email = ?", [data.email], (error, user) => {
     if (error) {
-      return res.status(500).json({ message: "Erro ao buscar usuário." });
+      console.error("Erro ao buscar usuário:", error.message);
+      return res.status(500).json({ message: "Erro interno do servidor." });
     }
 
     if (!user) {
       return res.status(401).json({ message: "Email ou senha inválidos." });
     }
 
-    const passwordIsValid = bcrypt.compareSync(password, user.password);
+    const passwordIsValid = bcrypt.compareSync(data.password, user.password);
 
     if (!passwordIsValid) {
       return res.status(401).json({ message: "Email ou senha inválidos." });
@@ -57,7 +86,7 @@ router.post("/login", (req, res) => {
         id: user.id,
         email: user.email
       },
-      process.env.JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: "1h" }
     );
 
